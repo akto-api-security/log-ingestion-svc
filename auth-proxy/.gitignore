@@ -1,0 +1,63 @@
+# Go build outputs
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Binaries produced by `go build` and `go install`
+/bin/
+/vendor/
+
+# Built application binary (common name for this repo)
+hermes
+auth-proxy
+
+# Coverage and test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Environment files
+.env
+
+# Private keys, tokens and other secrets
+private_key.pem
+public_key.pem
+*.pem
+*.key
+*.crt
+*.p12
+
+# Generated token files / test artifacts
+*.jwt
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker artifacts
+docker-compose.override.yml
+.env.*
+
+# Go modules and workspace (optionally ignored at repo root only)
+# keep go.mod and go.sum under version control, but ignore workspace files
+# If using vendor, remove comment on vendor/ above to keep vendor/ out
+go.work
+go.work.sum
+
+# Logs
+*.log
+
+# Misc
+coverage.out
+
+# Keep this file tracked
+!/.gitignore
