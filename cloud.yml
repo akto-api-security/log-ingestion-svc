@@ -8,9 +8,7 @@ services:
     environment:
       - PORT=8081
       - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - JWT_PUBLIC_KEY_PATH=/app/public_key.pem
-      - ALLOWED_ISSUERS=akto-auth,Akto
-      - ALLOWED_AUDIENCES=
+      - RSA_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqzaFFKO+uAbTHI1vomEX62l8ZEAk/K0cVtI3m3tVGXhgDpmvero1nDR9OR2adn2Fn3bQ2lWqFY2j6hYZ3/a8clJqhWJBC8zKLEl87pYPwyQcdXZJa7DwH+hR8ovej0jugk4jhomDx0mEAw2wP0ntrvsazh+6DpTR12vKro3hLVid5zY0Z1zQ2IQ6dcxF7bgXflFLeSvCC267C83pwNk5mpfUaaPPECpsFLXHIIIx929CHz3xTN55NOgURBHwGyf3C6dEMQH1ER0XarmX8ShPfZDSnWu2GPeigJf9ghX3KCI1GeQcktCzycK/77PWSc+yksa3NYvaB4PgDxHaLDyckQIDAQAB-----END PUBLIC KEY-----"
       - USE_ELASTICSEARCH=true
       - INSECURE_SKIP_VERIFY=false
     ports:

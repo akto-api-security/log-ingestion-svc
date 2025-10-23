@@ -8,7 +8,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY main.go ./
+COPY . .
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o auth-proxy .
@@ -22,9 +22,6 @@ WORKDIR /app
 
 # Copy the binary from builder
 COPY --from=builder /app/auth-proxy .
-
-# Copy the public key for RS256 verification
-COPY public_key.pem .
 
 # Expose port
 EXPOSE 8081
