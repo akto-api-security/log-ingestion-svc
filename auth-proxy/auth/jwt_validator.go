@@ -4,73 +4,44 @@ import (
 	"context"
 	"crypto/rsa"
 	"fmt"
-	"os"
 	"strings"
-	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
 type JWTValidator struct {
-	publicKey  *rsa.PublicKey
-	skipVerify bool
+	publicKey *rsa.PublicKey
 }
 
-func NewJWTValidator(publicKeyPEM string, skipVerify bool) (*JWTValidator, error) {
-	validator := &JWTValidator{skipVerify: skipVerify}
-
-	if publicKeyPEM != "" {
-		pemBytes := normalizePEM(publicKeyPEM)
-		publicKey, err := jwt.ParseRSAPublicKeyFromPEM(pemBytes)
-		if err != nil {
-			if data, err2 := os.ReadFile(publicKeyPEM); err2 == nil {
-				publicKey, err = jwt.ParseRSAPublicKeyFromPEM(data)
-			}
-		}
-		if publicKey == nil || err != nil {
-			return nil, fmt.Errorf("failed to parse public key: %w", err)
-		}
-		validator.publicKey = publicKey
-	} else {
-		return nil, fmt.Errorf("either public key or public key path must be provided")
+func NewJWTValidator(publicKeyPEM string) (*JWTValidator, error) {
+	if publicKeyPEM == "" {
+		return nil, fmt.Errorf("public key must be provided")
 	}
 
-	return validator, nil
+	pemBytes := normalizePEM(publicKeyPEM)
+	publicKey, err := jwt.ParseRSAPublicKeyFromPEM(pemBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse public key: %w", err)
+	}
+
+	return &JWTValidator{publicKey: publicKey}, nil
 }
 
+// Validate parses and validates a JWT token using RSA signature verification.
+// It extracts the accountId claim and returns it along with issuer and subject.
 func (v *JWTValidator) Validate(ctx context.Context, tokenString string) (*Claims, error) {
 	type CustomClaims struct {
 		AccountID int64 `json:"accountId"`
 		jwt.RegisteredClaims
 	}
 
-	if v.skipVerify {
-		token, _, err := new(jwt.Parser).ParseUnverified(tokenString, &CustomClaims{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse token: %w", err)
-		}
-		customClaims, ok := token.Claims.(*CustomClaims)
-		if !ok {
-			return nil, fmt.Errorf("invalid claims type")
-		}
-		if customClaims.AccountID == 0 {
-			return nil, fmt.Errorf("accountId not found in token")
-		}
-		return &Claims{
-			AccountID: customClaims.AccountID,
-			Issuer:    customClaims.Issuer,
-			Subject:   customClaims.Subject,
-		}, nil
-	}
-
+	// Parse token with RSA signature verification
 	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if v.publicKey != nil {
-			if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return v.publicKey, nil
+		// Verify the signing method is RSA
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return nil, nil
+		return v.publicKey, nil
 	})
 
 	if err != nil {
@@ -78,18 +49,16 @@ func (v *JWTValidator) Validate(ctx context.Context, tokenString string) (*Claim
 	}
 
 	if !token.Valid {
-		return nil, fmt.Errorf("invalid token")
+		return nil, fmt.Errorf("token is invalid")
 	}
 
+	// Extract claims
 	customClaims, ok := token.Claims.(*CustomClaims)
 	if !ok {
 		return nil, fmt.Errorf("invalid claims type")
 	}
 
-	if customClaims.ExpiresAt != nil && customClaims.ExpiresAt.Before(time.Now()) {
-		return nil, fmt.Errorf("token expired")
-	}
-
+	// Validate accountId exists
 	if customClaims.AccountID == 0 {
 		return nil, fmt.Errorf("accountId not found in token")
 	}

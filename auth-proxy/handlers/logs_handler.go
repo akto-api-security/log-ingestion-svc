@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"io"
 	"log"
 	"net/http"
 
@@ -32,29 +31,22 @@ func (h *LogsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	accountID := claims.GetAccountID()
-	log.Printf("Authenticated request from account: %s", accountID)
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("Failed to read request body: %v", err)
+	var logs []map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&logs); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
 
-	var logs []map[string]interface{}
-	if err := json.Unmarshal(body, &logs); err != nil {
-		log.Printf("Failed to parse logs: %v", err)
-		http.Error(w, "Bad request: invalid JSON", http.StatusBadRequest)
-		return
-	}
-
+	// Async write - returns immediately
 	if err := h.storage.StoreLogs(r.Context(), accountID, logs); err != nil {
-		log.Printf("Failed to store logs: %v", err)
+		log.Printf("Failed to queue logs: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"success"}`))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	w.Write([]byte(`{"status":"accepted"}`))
 }

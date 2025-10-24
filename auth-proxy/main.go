@@ -10,13 +10,12 @@ import (
 )
 
 func main() {
-	loader := config.NewLoader(".env")
-	cfg, err := loader.Load()
+	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	validator, err := auth.NewJWTValidator(cfg.JWTPublicKey, cfg.InsecureSkipVerify)
+	validator, err := auth.NewJWTValidator(cfg.JWTPublicKey)
 	if err != nil {
 		log.Fatalf("Failed to create validator: %v", err)
 	}
