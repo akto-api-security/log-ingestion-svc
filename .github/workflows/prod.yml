@@ -14,13 +14,18 @@ on:
         options:
           - 'False'
           - 'True'
+      auth_proxy:
+        type: boolean
+        default: true
+        description: Auth Proxy
 
 jobs:
   build-auth-proxy:
     runs-on: ubuntu-22.04
+    if: ${{ github.event.inputs.auth_proxy == 'true' }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v2
 
       - name: Set up Go
         uses: actions/setup-go@v4
@@ -32,9 +37,29 @@ jobs:
         working-directory: ./auth-proxy
         run: go test -v ./...
 
+      - name: Send test skip notification to Slack
+        id: slack-test
+        if: ${{ github.event.inputs.skipTests == 'True' }}
+        uses: slackapi/slack-github-action@v1.23.0
+        with:
+          payload: |
+            {
+              "text": "Releasing Auth Proxy v${{ github.event.inputs.release_version }}, after skipping tests"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
       - name: Build binary
         working-directory: ./auth-proxy
         run: go build -o auth-proxy .
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
 
       - name: DockerHub login
         env:
@@ -56,6 +81,21 @@ jobs:
             -t $ECR_REGISTRY/akto-auth-proxy:$IMAGE_TAG_1 \
             -t $ECR_REGISTRY/akto-auth-proxy:$IMAGE_TAG_2 \
             . --push
+          echo "::set-output name=image::$ECR_REGISTRY/akto-auth-proxy:$IMAGE_TAG_2"
+
+      - name: Configure AWS Credentials for ECR
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+        with:
+          mask-password: "true"
+          registry-type: public
 
       - name: Push git tag
         id: tag_version
@@ -74,7 +114,7 @@ jobs:
             
             Docker Image: `aktosecurity/akto-auth-proxy:${{ github.event.inputs.release_version }}`
 
-      - name: Send release notification to Slack
+      - name: Send Github release notification to Slack
         id: slack
         uses: slackapi/slack-github-action@v1.23.0
         with:
@@ -89,7 +129,8 @@ jobs:
       - name: Create reports directory
         run: mkdir -p scout-reports
 
-      - name: Analyze for critical and high CVEs
+      - name: Analyze for critical and high CVEs (Auth Proxy)
+        if: ${{ github.event.inputs.auth_proxy == 'true' }}
         uses: docker/scout-action@v1
         with:
           command: cves
