@@ -3,7 +3,7 @@ version: '3.3'
 services:
   # Authentication Proxy - JWT validation layer
   auth-proxy:
-    build: ./auth-proxy
+    image: akto-api-security/akto-logs-ingestion-svc:latest
     container_name: auth-proxy
     environment:
       - PORT=8081
