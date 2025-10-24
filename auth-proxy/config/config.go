@@ -15,7 +15,7 @@ type Config struct {
 // Load reads configuration from environment variables
 func Load() (*Config, error) {
 	config := &Config{
-		Port:             getEnv("PORT", "8081"),
+		Port:             getEnv("PORT", "9091"),
 		ElasticsearchURL: getEnv("ELASTICSEARCH_URL", "http://elasticsearch:9200"),
 		JWTPublicKey:     getEnv("RSA_PUBLIC_KEY", ""),
 	}
