@@ -78,10 +78,10 @@ jobs:
           docker buildx create --use
           docker buildx build \
             --platform linux/arm64/v8,linux/amd64 \
-            -t $ECR_REGISTRY/akto-auth-proxy:$IMAGE_TAG_1 \
-            -t $ECR_REGISTRY/akto-auth-proxy:$IMAGE_TAG_2 \
+            -t $ECR_REGISTRY/akto-log-ingestion-svc:$IMAGE_TAG_1 \
+            -t $ECR_REGISTRY/akto-log-ingestion-svc:$IMAGE_TAG_2 \
             . --push
-          echo "::set-output name=image::$ECR_REGISTRY/akto-auth-proxy:$IMAGE_TAG_2"
+          echo "::set-output name=image::$ECR_REGISTRY/akto-log-ingestion:$IMAGE_TAG_2"
 
       - name: Configure AWS Credentials for ECR
         uses: aws-actions/configure-aws-credentials@v1
@@ -112,7 +112,7 @@ jobs:
           body: |
             Auth Proxy v${{ github.event.inputs.release_version }}
             
-            Docker Image: `aktosecurity/akto-auth-proxy:${{ github.event.inputs.release_version }}`
+            Docker Image: `aktosecurity/akto-log-ingestion-svc:${{ github.event.inputs.release_version }}`
 
       - name: Send Github release notification to Slack
         id: slack
@@ -134,7 +134,7 @@ jobs:
         uses: docker/scout-action@v1
         with:
           command: cves
-          image: aktosecurity/akto-auth-proxy:${{ github.event.inputs.release_version }}
+          image: aktosecurity/akto-log-ingestion-svc:${{ github.event.inputs.release_version }}
           sarif-file: scout-reports/auth-proxy.sarif
           only-severities: critical,high
           summary: true
