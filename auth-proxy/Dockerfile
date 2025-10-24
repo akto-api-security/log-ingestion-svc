@@ -24,7 +24,7 @@ WORKDIR /app
 COPY --from=builder /app/auth-proxy .
 
 # Expose port
-EXPOSE 8081
+EXPOSE 9091
 
 # Run the application
 CMD ["./auth-proxy"]
