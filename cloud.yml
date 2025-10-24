@@ -6,12 +6,12 @@ services:
     image: akto-api-security/akto-logs-ingestion-svc:latest
     container_name: auth-proxy
     environment:
-      - PORT=8081
+      - PORT=9091
       - ELASTICSEARCH_URL=http://elasticsearch:9200
       - RSA_PUBLIC_KEY="your-RSA-public-key-here"
       - USE_ELASTICSEARCH=true
     ports:
-      - "8081:8081"
+      - "9091:9091"
     depends_on:
       - elasticsearch
     restart: always
