@@ -1,0 +1,147 @@
+name: Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version for the auth-proxy deployment'
+        required: true
+      skipTests:
+        description: 'Do you want to skip tests?'
+        required: true
+        default: 'False'
+        type: choice
+        options:
+          - 'False'
+          - 'True'
+      auth_proxy:
+        type: boolean
+        default: true
+        description: Auth Proxy
+
+jobs:
+  build-auth-proxy:
+    runs-on: ubuntu-22.04
+    if: ${{ github.event.inputs.auth_proxy == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Run tests
+        if: ${{ github.event.inputs.skipTests == 'False' }}
+        working-directory: ./auth-proxy
+        run: go test -v ./...
+
+      - name: Send test skip notification to Slack
+        id: slack-test
+        if: ${{ github.event.inputs.skipTests == 'True' }}
+        uses: slackapi/slack-github-action@v1.23.0
+        with:
+          payload: |
+            {
+              "text": "Releasing Auth Proxy v${{ github.event.inputs.release_version }}, after skipping tests"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Build binary
+        working-directory: ./auth-proxy
+        run: go build -o auth-proxy .
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: DockerHub login
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          docker login -u $DOCKER_USERNAME -p $DOCKER_PASSWORD
+
+      - name: Build and push Docker image
+        working-directory: ./auth-proxy
+        env:
+          ECR_REGISTRY: aktosecurity
+          IMAGE_TAG_1: latest
+          IMAGE_TAG_2: ${{ github.event.inputs.release_version }}
+        run: |
+          docker buildx create --use
+          docker buildx build \
+            --platform linux/arm64/v8,linux/amd64 \
+            -t $ECR_REGISTRY/akto-log-ingestion-svc:$IMAGE_TAG_1 \
+            -t $ECR_REGISTRY/akto-log-ingestion-svc:$IMAGE_TAG_2 \
+            . --push
+          echo "::set-output name=image::$ECR_REGISTRY/akto-log-ingestion:$IMAGE_TAG_2"
+
+      - name: Configure AWS Credentials for ECR
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+        with:
+          mask-password: "true"
+          registry-type: public
+
+      - name: Push git tag
+        id: tag_version
+        uses: mathieudutour/github-tag-action@v6.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          custom_tag: auth-proxy-${{ github.event.inputs.release_version }}
+
+      - name: Create a GitHub release
+        uses: ncipollo/release-action@v1.12.0
+        with:
+          tag: ${{ steps.tag_version.outputs.new_tag }}
+          name: Release ${{ steps.tag_version.outputs.new_tag }}
+          body: |
+            Auth Proxy v${{ github.event.inputs.release_version }}
+            
+            Docker Image: `aktosecurity/akto-log-ingestion-svc:${{ github.event.inputs.release_version }}`
+
+      - name: Send Github release notification to Slack
+        id: slack
+        uses: slackapi/slack-github-action@v1.23.0
+        with:
+          payload: |
+            {
+              "text": "Auth Proxy v${{ github.event.inputs.release_version }} released!"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Create reports directory
+        run: mkdir -p scout-reports
+
+      - name: Analyze for critical and high CVEs (Auth Proxy)
+        if: ${{ github.event.inputs.auth_proxy == 'true' }}
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: aktosecurity/akto-log-ingestion-svc:${{ github.event.inputs.release_version }}
+          sarif-file: scout-reports/auth-proxy.sarif
+          only-severities: critical,high
+          summary: true
+        continue-on-error: true
+
+      - name: Upload SARIF file as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-scout-cve-reports
+          path: scout-reports/
