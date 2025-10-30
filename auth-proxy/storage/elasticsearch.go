@@ -30,7 +30,7 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, accountID string,
 	}
 
 	var bulkBody bytes.Buffer
-	indexName := fmt.Sprintf("account-%s-logs-%s", accountID, time.Now().Format("2006.01.02"))
+	indexName := fmt.Sprintf("account-%s-logs", accountID)
 	timestamp := time.Now().Format(time.RFC3339)
 
 	for _, logEntry := range logs {
