@@ -7,9 +7,12 @@ import (
 	"auth-proxy/config"
 	"auth-proxy/server"
 	"auth-proxy/storage"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	_ = godotenv.Load() // loads .env if present, ignore error
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
