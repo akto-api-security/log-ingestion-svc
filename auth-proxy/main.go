@@ -23,7 +23,7 @@ func main() {
 		log.Fatalf("Failed to create validator: %v", err)
 	}
 
-	logStorage := storage.NewElasticsearchStorage(cfg.ElasticsearchURL)
+	logStorage := storage.NewElasticsearchStorage(cfg.ElasticsearchURL, cfg.KibanaURL)
 
 	srv := server.New(cfg, validator, logStorage)
 
