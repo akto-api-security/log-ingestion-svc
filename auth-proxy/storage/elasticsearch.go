@@ -58,19 +58,20 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, accountID string,
 		}
 
 		// apply selection rules:
-		// 1) if logAccount != tokenAccount AND logAccount == "1000000" -> prefer tokenAccount
-		// 2) if tokenAccount == logAccount -> either (use tokenAccount)
-		// 3) if tokenAccount != logAccount -> prefer logAccount
-		effectiveAccount := accountID
+		// 1) if logAccount == "1000000" -> use 1000000 (go to datastream 1000000)
+		// 2) else if logAccount == tokenAccount -> use token/log (either is fine)
+		// 3) else -> use logAccount
+		effectiveAccount := accountID // Default to token account
 		if logAccount != "" {
-			if logAccount != accountID {
-				if logAccount == "1000000" {
-					effectiveAccount = accountID
-				} else {
-					effectiveAccount = logAccount
-				}
-			} else {
+			if logAccount == "1000000" {
+				// Rule 1: If log account is 1000000, use it
+				effectiveAccount = "1000000"
+			} else if logAccount == accountID {
+				// Rule 2: If they match, use either (we'll use token)
 				effectiveAccount = accountID
+			} else {
+				// Rule 3: If they differ and log is not 1000000, use log account
+				effectiveAccount = logAccount
 			}
 		}
 
