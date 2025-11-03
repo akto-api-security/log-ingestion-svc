@@ -188,8 +188,12 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, accountID string,
 			if templateResp.StatusCode >= 200 && templateResp.StatusCode < 300 {
 				// Template created successfully
 			} else {
-				body, _ := io.ReadAll(templateResp.Body)
-				log.Printf("Failed to create template %s (status %d): %s", templateName, templateResp.StatusCode, string(body))
+				body, err := io.ReadAll(templateResp.Body)
+				if err != nil {
+					log.Printf("Failed to create template %s (status %d): could not read response body: %v", templateName, templateResp.StatusCode, err)
+				} else {
+					log.Printf("Failed to create template %s (status %d): %s", templateName, templateResp.StatusCode, string(body))
+				}
 			}
 			templateResp.Body.Close()
 		}
