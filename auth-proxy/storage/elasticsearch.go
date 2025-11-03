@@ -169,7 +169,11 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, accountID string,
 					},
 				},
 			}
-			templateJSON, _ := json.Marshal(template)
+			templateJSON, err := json.Marshal(template)
+			if err != nil {
+				log.Printf("failed to marshal template for %s: %v", templateName, err)
+				continue
+			}
 			templateReq, err := http.NewRequestWithContext(ctx, "PUT", templateURL, bytes.NewReader(templateJSON))
 			if err != nil {
 				log.Printf("failed to create template request for %s: %v", ds, err)
