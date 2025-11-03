@@ -263,7 +263,11 @@ func (es *ElasticsearchStorage) createKibanaIndexPattern(ctx context.Context, da
 		},
 	}
 
-	patternJSON, _ := json.Marshal(indexPattern)
+	patternJSON, err := json.Marshal(indexPattern)
+	if err != nil {
+		log.Printf("failed to marshal Kibana index pattern for %s: %v", dataStreamName, err)
+		return
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", kibanaURL, bytes.NewReader(patternJSON))
 	if err != nil {
 		log.Printf("failed to create Kibana index pattern request for %s: %v", dataStreamName, err)
