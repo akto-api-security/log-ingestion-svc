@@ -214,8 +214,12 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, accountID string,
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			// Data stream created successfully
 		} else if resp.StatusCode != 400 { // 400 means already exists
-			body, _ := io.ReadAll(resp.Body)
-			log.Printf("Failed to create data stream %s (status %d): %s", ds, resp.StatusCode, string(body))
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				log.Printf("Failed to create data stream %s (status %d): could not read response body: %v", ds, resp.StatusCode, err)
+			} else {
+				log.Printf("Failed to create data stream %s (status %d): %s", ds, resp.StatusCode, string(body))
+			}
 		}
 		resp.Body.Close()
 
