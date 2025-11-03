@@ -106,8 +106,14 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, accountID string,
 		templateURL := fmt.Sprintf("%s/_index_template/%s", es.baseURL, templateName)
 
 		// Check if template exists
-		checkReq, _ := http.NewRequestWithContext(ctx, "HEAD", templateURL, nil)
-		checkResp, _ := es.client.Do(checkReq)
+		checkReq, err := http.NewRequestWithContext(ctx, "HEAD", templateURL, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create request to check index template: %w", err)
+		}
+		checkResp, err := es.client.Do(checkReq)
+		if err != nil {
+			return fmt.Errorf("failed to execute request to check index template: %w", err)
+		}
 		if checkResp != nil {
 			checkResp.Body.Close()
 		}
