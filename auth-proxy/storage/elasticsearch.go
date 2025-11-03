@@ -289,7 +289,11 @@ func (es *ElasticsearchStorage) createKibanaIndexPattern(ctx context.Context, da
 	} else if resp.StatusCode == 409 {
 		// Already exists, that's fine
 	} else {
-		body, _ := io.ReadAll(resp.Body)
-		log.Printf("Failed to create Kibana index pattern %s (status %d): %s", dataStreamName, resp.StatusCode, string(body))
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("Failed to create Kibana index pattern %s (status %d): could not read response body: %v", dataStreamName, resp.StatusCode, err)
+		} else {
+			log.Printf("Failed to create Kibana index pattern %s (status %d): %s", dataStreamName, resp.StatusCode, string(body))
+		}
 	}
 }
