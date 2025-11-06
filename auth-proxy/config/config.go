@@ -9,7 +9,6 @@ import (
 type Config struct {
 	Port             string
 	ElasticsearchURL string
-	KibanaURL        string
 	JWTPublicKey     string
 }
 
@@ -18,7 +17,6 @@ func Load() (*Config, error) {
 	config := &Config{
 		Port:             getEnv("PORT", "9091"),
 		ElasticsearchURL: getEnv("ELASTICSEARCH_URL", "http://elasticsearch:9200"),
-		KibanaURL:        getEnv("KIBANA_URL", "http://localhost:5601"),
 		JWTPublicKey:     getEnv("RSA_PUBLIC_KEY", ""),
 	}
 	if err := config.Validate(); err != nil {

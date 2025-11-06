@@ -7,319 +7,160 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"time"
+
+	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/elastic/go-elasticsearch/v8/esapi"
 )
 
 type ElasticsearchStorage struct {
-	client    *http.Client
-	baseURL   string
-	kibanaURL string
+	elasticsearchClient *elasticsearch.Client
 }
 
-func NewElasticsearchStorage(baseURL, kibanaURL string) *ElasticsearchStorage {
+func NewElasticsearchStorage(elasticsearchClient *elasticsearch.Client) *ElasticsearchStorage {
 	return &ElasticsearchStorage{
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		baseURL:   baseURL,
-		kibanaURL: kibanaURL,
+		elasticsearchClient: elasticsearchClient,
 	}
 }
 
-func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, accountID string, logs []map[string]interface{}) error {
+func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID string, logs []map[string]interface{}) error {
 	if len(logs) == 0 {
 		return nil
 	}
 
-	var bulkBody bytes.Buffer
+	var bulkRequestBody bytes.Buffer
 	timestamp := time.Now().Format(time.RFC3339)
 
-	// collect unique datastream names to ensure existence
-	dsSet := make(map[string]struct{})
+	// Track unique data stream names to validate existence once
+	dataStreamSet := make(map[string]struct{})
 
 	for _, logEntry := range logs {
-		// extract account id from log (parser) - could be string or number
-		logAccount := extractAccountIdFromLog(logEntry)
+		// Extract account ID from log entry
+		logAccountID := extractAccountIdFromLog(logEntry)
 
-		// apply selection rules to choose the effective account ID
-		effectiveAccount := chooseAccountId(logAccount, accountID)
+		// Choose effective account according to rules
+		effectiveAccountID := chooseEffectiveAccountID(logAccountID, tokenAccountID)
 
-		// add both columns requested
-		logEntry["token_accountId"] = accountID
-		logEntry["log_accountId"] = logAccount
+		// Add timestamp and account IDs to log entry
+		logEntry["token_accountId"] = tokenAccountID
+		logEntry["log_accountId"] = logAccountID
 		logEntry["@timestamp"] = timestamp
 
-		// datastream name derived from effective account selection
-		dsName := fmt.Sprintf("account-%s-logs", effectiveAccount)
-		dsSet[dsName] = struct{}{}
+		// Data stream name
+		indexName := fmt.Sprintf("cyborg-%s-logs", effectiveAccountID)
+		dataStreamSet[indexName] = struct{}{}
 
+		// Create bulk action
 		action := map[string]interface{}{
+			// Use create op; will fail if not creatable/allowed (as desired)
 			"create": map[string]interface{}{
-				"_index": dsName,
+				"_index": indexName,
 			},
 		}
 		actionJSON, _ := json.Marshal(action)
-		bulkBody.Write(actionJSON)
-		bulkBody.WriteByte('\n')
+		bulkRequestBody.Write(actionJSON)
+		bulkRequestBody.WriteByte('\n')
 
 		logJSON, _ := json.Marshal(logEntry)
-		bulkBody.Write(logJSON)
-		bulkBody.WriteByte('\n')
+		bulkRequestBody.Write(logJSON)
+		bulkRequestBody.WriteByte('\n')
 	}
 
-	// Create datastreams if they don't exist.
-	for ds := range dsSet {
-		if err := es.ensureDataStreamExists(ctx, ds); err != nil {
-			return err
-		}
-	}
-
-	url := fmt.Sprintf("%s/_bulk", es.baseURL)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, &bulkBody)
-	if err != nil {
-		return fmt.Errorf("failed to create bulk request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/x-ndjson")
-
-	resp, err := es.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send bulk request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("elasticsearch bulk API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	return nil
-}
-
-func (es *ElasticsearchStorage) createKibanaIndexPattern(ctx context.Context, dataStreamName string) {
-	// Kibana index pattern ID and name will be the datastream name
-	indexPatternID := dataStreamName
-
-	// Create the index pattern via Kibana API
-	kibanaURL := fmt.Sprintf("%s/api/saved_objects/index-pattern/%s", es.kibanaURL, indexPatternID)
-
-	indexPattern := map[string]interface{}{
-		"attributes": map[string]interface{}{
-			"title":         dataStreamName,
-			"timeFieldName": "@timestamp",
-		},
-	}
-
-	patternJSON, err := json.Marshal(indexPattern)
-	if err != nil {
-		log.Printf("failed to marshal Kibana index pattern for %s: %v", dataStreamName, err)
-		return
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", kibanaURL, bytes.NewReader(patternJSON))
-	if err != nil {
-		log.Printf("failed to create Kibana index pattern request for %s: %v", dataStreamName, err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("kbn-xsrf", "true")
-
-	resp, err := es.client.Do(req)
-	if err != nil {
-		log.Printf("failed to create Kibana index pattern %s: %v", dataStreamName, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		// Kibana index pattern created successfully
-	} else if resp.StatusCode == 409 {
-		// Already exists, that's fine
-	} else {
-		body, err := io.ReadAll(resp.Body)
+	// Validate that each data stream exists; otherwise return error
+	for ds := range dataStreamSet {
+		exists, err := elasticsearchStorage.dataStreamExists(ctx, ds)
 		if err != nil {
-			log.Printf("Failed to create Kibana index pattern %s (status %d): could not read response body: %v", dataStreamName, resp.StatusCode, err)
-		} else {
-			log.Printf("Failed to create Kibana index pattern %s (status %d): %s", dataStreamName, resp.StatusCode, string(body))
+			return fmt.Errorf("failed to verify data stream %s: %w", ds, err)
+		}
+		if !exists {
+			return fmt.Errorf("data stream %s does not exist", ds)
 		}
 	}
+
+	// Send bulk request to Elasticsearch using esapi
+	bulkRequest := esapi.BulkRequest{
+		Body: &bulkRequestBody,
+	}
+
+	bulkResponse, err := bulkRequest.Do(ctx, elasticsearchStorage.elasticsearchClient)
+	if err != nil {
+		return fmt.Errorf("failed to execute bulk request: %w", err)
+	}
+	defer bulkResponse.Body.Close()
+
+	if bulkResponse.IsError() {
+		bodyBytes, _ := io.ReadAll(bulkResponse.Body)
+		return fmt.Errorf("elasticsearch bulk API returned error status %s: %s", bulkResponse.Status(), string(bodyBytes))
+	}
+
+	// Check for individual item errors in bulk response
+	var bulkResponseMap map[string]interface{}
+	if err := json.NewDecoder(bulkResponse.Body).Decode(&bulkResponseMap); err != nil {
+		log.Printf("warning: failed to decode bulk response: %v", err)
+	} else if errors, ok := bulkResponseMap["errors"].(bool); ok && errors {
+		log.Printf("warning: some bulk items failed, check response: %+v", bulkResponseMap)
+	}
+
+	return nil
 }
 
-// extractAccountIdFromLog extracts account ID from log entry - could be string or number
+// extractAccountIdFromLog extracts account ID from log entry - handles string or number types
 func extractAccountIdFromLog(logEntry map[string]interface{}) string {
-	var logAccount string
-	if v, ok := logEntry["account_id"]; ok && v != nil {
-		switch t := v.(type) {
+	var logAccountID string
+	if value, ok := logEntry["account_id"]; ok && value != nil {
+		switch typedValue := value.(type) {
 		case string:
-			logAccount = t
+			logAccountID = typedValue
 		case float64:
-			// JSON numbers are float64
-			logAccount = fmt.Sprintf("%.0f", t)
+			// JSON numbers are parsed as float64
+			logAccountID = fmt.Sprintf("%.0f", typedValue)
 		case int:
-			logAccount = fmt.Sprintf("%d", t)
+			logAccountID = fmt.Sprintf("%d", typedValue)
 		case int64:
-			logAccount = fmt.Sprintf("%d", t)
+			logAccountID = fmt.Sprintf("%d", typedValue)
 		default:
-			logAccount = fmt.Sprintf("%v", t)
+			logAccountID = fmt.Sprintf("%v", typedValue)
 		}
 	}
-	return logAccount
+	return logAccountID
 }
 
-// chooseAccountId applies selection rules to choose the effective account ID:
-// 1) if logAccount == "1000000" -> use tokenAccount (go to datastream with token account)
-// 2) else if logAccount == tokenAccount -> use tokenAccount (either is fine)
-// 3) else -> use logAccount
-func chooseAccountId(logAccount, tokenAccount string) string {
-	effectiveAccount := tokenAccount // Default to token account
-	if logAccount != "" {
-		if logAccount == "1000000" {
-			// Rule 1: If log account is 1000000, use token account
-			effectiveAccount = tokenAccount
-		} else if logAccount == tokenAccount {
-			// Rule 2: If they match, use either (we'll use token)
-			effectiveAccount = tokenAccount
-		} else {
-			// Rule 3: If they differ and log is not 1000000, use log account
-			effectiveAccount = logAccount
-		}
+// chooseEffectiveAccountID applies selection rules to determine the effective account ID
+// Rules:
+// 1) if logAccountID == "1000000" -> use tokenAccountID
+// 2) else if logAccountID == tokenAccountID -> use tokenAccountID
+// 3) else if logAccountID != "" -> use logAccountID
+// 4) else use tokenAccountID
+func chooseEffectiveAccountID(logAccountID, tokenAccountID string) string {
+	if logAccountID == "1000000" {
+		return tokenAccountID
 	}
-	return effectiveAccount
+	if logAccountID == tokenAccountID {
+		return tokenAccountID
+	}
+	if logAccountID != "" {
+		return logAccountID
+	}
+	return tokenAccountID
 }
 
-// ensureDataStreamExists ensures that the datastream and its dependencies exist
-func (es *ElasticsearchStorage) ensureDataStreamExists(ctx context.Context, ds string) error {
-	// First, ensure index template exists for this datastream pattern
-	templateName := fmt.Sprintf("%s-template", ds)
-	templateExists, err := es.checkIndexTemplateExists(ctx, templateName)
+// dataStreamExists checks whether a data stream exists using the Get Data Stream API
+func (elasticsearchStorage *ElasticsearchStorage) dataStreamExists(ctx context.Context, dataStreamName string) (bool, error) {
+	req := esapi.IndicesGetDataStreamRequest{
+		Name: []string{dataStreamName},
+	}
+	res, err := req.Do(ctx, elasticsearchStorage.elasticsearchClient)
 	if err != nil {
-		return fmt.Errorf("failed to check index template: %w", err)
+		return false, err
 	}
+	defer res.Body.Close()
 
-	if !templateExists {
-		if err := es.createIndexTemplate(ctx, templateName, ds); err != nil {
-			return fmt.Errorf("failed to create index template: %w", err)
-		}
+	if res.StatusCode == 404 {
+		return false, nil
 	}
-
-	// Now create the datastream if it doesn't exist
-	exists, err := es.checkDataStreamExists(ctx, ds)
-	if err != nil {
-		return fmt.Errorf("failed to check data stream: %w", err)
+	if res.IsError() {
+		bodyBytes, _ := io.ReadAll(res.Body)
+		return false, fmt.Errorf("status %s: %s", res.Status(), string(bodyBytes))
 	}
-	if !exists {
-		if err := es.createDataStream(ctx, ds); err != nil {
-			return fmt.Errorf("failed to create data stream: %w", err)
-		}
-	}
-
-	// Always try to create Kibana index pattern (even if datastream already exists)
-	es.createKibanaIndexPattern(ctx, ds)
-
-	return nil
-}
-
-// checkIndexTemplateExists checks if an index template exists
-func (es *ElasticsearchStorage) checkIndexTemplateExists(ctx context.Context, templateName string) (bool, error) {
-	templateURL := fmt.Sprintf("%s/_index_template/%s", es.baseURL, templateName)
-	checkReq, err := http.NewRequestWithContext(ctx, "HEAD", templateURL, nil)
-	if err != nil {
-		return false, fmt.Errorf("failed to create request to check index template: %w", err)
-	}
-
-	checkResp, err := es.client.Do(checkReq)
-	if err != nil {
-		return false, fmt.Errorf("failed to execute request to check index template: %w", err)
-	}
-	if checkResp != nil {
-		defer checkResp.Body.Close()
-	}
-
-	// 404 means template doesn't exist
-	return checkResp != nil && checkResp.StatusCode != 404, nil
-}
-
-// createIndexTemplate creates an index template for the datastream
-func (es *ElasticsearchStorage) createIndexTemplate(ctx context.Context, templateName, ds string) error {
-	templateURL := fmt.Sprintf("%s/_index_template/%s", es.baseURL, templateName)
-	templateJSON := []byte(fmt.Sprintf(elasticsearchTemplateJSON, ds))
-
-	templateReq, err := http.NewRequestWithContext(ctx, "PUT", templateURL, bytes.NewReader(templateJSON))
-	if err != nil {
-		return fmt.Errorf("failed to create template request for %s: %w", ds, err)
-	}
-	templateReq.Header.Set("Content-Type", "application/json")
-
-	templateResp, err := es.client.Do(templateReq)
-	if err != nil {
-		return fmt.Errorf("failed to create template %s: %w", templateName, err)
-	}
-	defer templateResp.Body.Close()
-
-	if templateResp.StatusCode >= 200 && templateResp.StatusCode < 300 {
-		// Template created successfully
-		return nil
-	}
-
-	body, err := io.ReadAll(templateResp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to create template %s (status %d): could not read response body: %w", templateName, templateResp.StatusCode, err)
-	}
-	return fmt.Errorf("failed to create template %s (status %d): %s", templateName, templateResp.StatusCode, string(body))
-}
-
-// checkDataStreamExists checks if a datastream exists
-func (es *ElasticsearchStorage) checkDataStreamExists(ctx context.Context, ds string) (bool, error) {
-	checkURL := fmt.Sprintf("%s/_data_stream/%s", es.baseURL, ds)
-	checkReq, err := http.NewRequestWithContext(ctx, "HEAD", checkURL, nil)
-	if err != nil {
-		return false, fmt.Errorf("failed to create request to check data stream: %w", err)
-	}
-
-	checkResp, err := es.client.Do(checkReq)
-	if err != nil {
-		return false, fmt.Errorf("failed to execute request to check data stream: %w", err)
-	}
-	if checkResp != nil {
-		defer checkResp.Body.Close()
-	}
-
-	// 404 means datastream doesn't exist
-	return checkResp != nil && checkResp.StatusCode != 404, nil
-}
-
-// createDataStream creates a datastream if it doesn't exist
-func (es *ElasticsearchStorage) createDataStream(ctx context.Context, ds string) error {
-	putURL := fmt.Sprintf("%s/_data_stream/%s", es.baseURL, ds)
-	req, err := http.NewRequestWithContext(ctx, "PUT", putURL, nil)
-	if err != nil {
-		log.Printf("failed to create data stream request for %s: %v", ds, err)
-		return nil // non-fatal
-	}
-
-	resp, err := es.client.Do(req)
-	if err != nil {
-		log.Printf("failed to create data stream %s: %v", ds, err)
-		return nil // non-fatal
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		// Data stream created successfully
-		return nil
-	}
-
-	if resp.StatusCode == 400 {
-		// 400 means already exists, that's fine
-		return nil
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("Failed to create data stream %s (status %d): could not read response body: %v", ds, resp.StatusCode, err)
-		return nil
-	}
-	log.Printf("Failed to create data stream %s (status %d): %s", ds, resp.StatusCode, string(body))
-	return nil
+	return true, nil
 }

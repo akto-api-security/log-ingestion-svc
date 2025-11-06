@@ -8,6 +8,7 @@ import (
 	"auth-proxy/server"
 	"auth-proxy/storage"
 
+	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/joho/godotenv"
 )
 
@@ -18,12 +19,33 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Initialize Elasticsearch client
+	elasticsearchClient, err := elasticsearch.NewClient(elasticsearch.Config{
+		Addresses: []string{cfg.ElasticsearchURL},
+	})
+	if err != nil {
+		log.Fatalf("Failed to create Elasticsearch client: %v", err)
+	}
+
+	// Verify connection to Elasticsearch
+	response, err := elasticsearchClient.Info()
+	if err != nil {
+		log.Fatalf("Failed to connect to Elasticsearch: %v", err)
+	}
+	defer response.Body.Close()
+
+	if response.IsError() {
+		log.Fatalf("Elasticsearch returned error status: %s", response.Status())
+	}
+
+	log.Printf("Connected to Elasticsearch successfully")
+
 	validator, err := auth.NewJWTValidator(cfg.JWTPublicKey)
 	if err != nil {
 		log.Fatalf("Failed to create validator: %v", err)
 	}
 
-	logStorage := storage.NewElasticsearchStorage(cfg.ElasticsearchURL, cfg.KibanaURL)
+	logStorage := storage.NewElasticsearchStorage(elasticsearchClient)
 
 	srv := server.New(cfg, validator, logStorage)
 
