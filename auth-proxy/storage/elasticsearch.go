@@ -102,12 +102,6 @@ func extractAccountIdFromLog(logEntry map[string]interface{}) string {
 	return ""
 }
 
-// chooseEffectiveAccountID applies selection rules to determine the effective account ID
-// Rules:
-// 1) if logAccountID == "1000000" -> use tokenAccountID
-// 2) else if logAccountID == tokenAccountID -> use tokenAccountID
-// 3) else if logAccountID != "" -> use logAccountID
-// 4) else use tokenAccountID
 func chooseEffectiveAccountID(logAccountID, tokenAccountID string) string {
 	if logAccountID == "1000000" || logAccountID == "" {
 		return tokenAccountID
