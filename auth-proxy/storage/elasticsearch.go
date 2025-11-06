@@ -31,9 +31,6 @@ func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context,
 	var bulkRequestBody bytes.Buffer
 	timestamp := time.Now().Format(time.RFC3339)
 
-	// Track unique data stream names to validate existence once
-	dataStreamSet := make(map[string]struct{})
-
 	for _, logEntry := range logs {
 		// Extract account ID from log entry
 		logAccountID := extractAccountIdFromLog(logEntry)
@@ -47,7 +44,6 @@ func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context,
 
 		// Data stream name
 		indexName := fmt.Sprintf("logs-account-%s", effectiveAccountID)
-		dataStreamSet[indexName] = struct{}{}
 
 		// Create bulk action
 		action := map[string]interface{}{
@@ -70,6 +66,10 @@ func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context,
 		Body: &bulkRequestBody,
 	}
 
+	return bulkRequestHandler(ctx, bulkRequest, elasticsearchStorage)
+}
+
+func bulkRequestHandler(ctx context.Context, bulkRequest esapi.BulkRequest, elasticsearchStorage *ElasticsearchStorage) error {
 	bulkResponse, err := bulkRequest.Do(ctx, elasticsearchStorage.elasticsearchClient)
 	if err != nil {
 		return fmt.Errorf("failed to execute bulk request: %w", err)
