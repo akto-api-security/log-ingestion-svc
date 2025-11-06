@@ -47,12 +47,12 @@ func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context,
 		logEntry["@timestamp"] = timestamp
 
 		// Data stream name
-		indexName := fmt.Sprintf("cyborg-%s-logs", effectiveAccountID)
+		indexName := fmt.Sprintf("account-%s-logs", effectiveAccountID)
 		dataStreamSet[indexName] = struct{}{}
 
 		// Create bulk action
 		action := map[string]interface{}{
-			// Use create op; will fail if not creatable/allowed (as desired)
+			// Use create op; will fail if not creatable/allowed
 			"create": map[string]interface{}{
 				"_index": indexName,
 			},
@@ -64,17 +64,6 @@ func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context,
 		logJSON, _ := json.Marshal(logEntry)
 		bulkRequestBody.Write(logJSON)
 		bulkRequestBody.WriteByte('\n')
-	}
-
-	// Validate that each data stream exists; otherwise return error
-	for ds := range dataStreamSet {
-		exists, err := elasticsearchStorage.dataStreamExists(ctx, ds)
-		if err != nil {
-			return fmt.Errorf("failed to verify data stream %s: %w", ds, err)
-		}
-		if !exists {
-			return fmt.Errorf("data stream %s does not exist", ds)
-		}
 	}
 
 	// Send bulk request to Elasticsearch using esapi
@@ -90,7 +79,9 @@ func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context,
 
 	if bulkResponse.IsError() {
 		bodyBytes, _ := io.ReadAll(bulkResponse.Body)
-		return fmt.Errorf("elasticsearch bulk API returned error status %s: %s", bulkResponse.Status(), string(bodyBytes))
+		// Just log the server message (e.g., data stream not found) and return a concise error
+		log.Printf("bulk indexing failed: status=%s body=%s", bulkResponse.Status(), string(bodyBytes))
+		return fmt.Errorf("bulk request failed: %s", bulkResponse.Status())
 	}
 
 	// Check for individual item errors in bulk response
@@ -142,25 +133,4 @@ func chooseEffectiveAccountID(logAccountID, tokenAccountID string) string {
 		return logAccountID
 	}
 	return tokenAccountID
-}
-
-// dataStreamExists checks whether a data stream exists using the Get Data Stream API
-func (elasticsearchStorage *ElasticsearchStorage) dataStreamExists(ctx context.Context, dataStreamName string) (bool, error) {
-	req := esapi.IndicesGetDataStreamRequest{
-		Name: []string{dataStreamName},
-	}
-	res, err := req.Do(ctx, elasticsearchStorage.elasticsearchClient)
-	if err != nil {
-		return false, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode == 404 {
-		return false, nil
-	}
-	if res.IsError() {
-		bodyBytes, _ := io.ReadAll(res.Body)
-		return false, fmt.Errorf("status %s: %s", res.Status(), string(bodyBytes))
-	}
-	return true, nil
 }
