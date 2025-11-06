@@ -43,11 +43,10 @@ func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context,
 
 		// Add timestamp and account IDs to log entry
 		logEntry["token_accountId"] = tokenAccountID
-		logEntry["log_accountId"] = logAccountID
 		logEntry["@timestamp"] = timestamp
 
 		// Data stream name
-		indexName := fmt.Sprintf("account-%s-logs", effectiveAccountID)
+		indexName := fmt.Sprintf("logs-account-%s", effectiveAccountID)
 		dataStreamSet[indexName] = struct{}{}
 
 		// Create bulk action
@@ -97,23 +96,10 @@ func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context,
 
 // extractAccountIdFromLog extracts account ID from log entry - handles string or number types
 func extractAccountIdFromLog(logEntry map[string]interface{}) string {
-	var logAccountID string
-	if value, ok := logEntry["account_id"]; ok && value != nil {
-		switch typedValue := value.(type) {
-		case string:
-			logAccountID = typedValue
-		case float64:
-			// JSON numbers are parsed as float64
-			logAccountID = fmt.Sprintf("%.0f", typedValue)
-		case int:
-			logAccountID = fmt.Sprintf("%d", typedValue)
-		case int64:
-			logAccountID = fmt.Sprintf("%d", typedValue)
-		default:
-			logAccountID = fmt.Sprintf("%v", typedValue)
-		}
+	if v, ok := logEntry["log_account_id"].(string); ok {
+		return v
 	}
-	return logAccountID
+	return ""
 }
 
 // chooseEffectiveAccountID applies selection rules to determine the effective account ID
@@ -123,13 +109,10 @@ func extractAccountIdFromLog(logEntry map[string]interface{}) string {
 // 3) else if logAccountID != "" -> use logAccountID
 // 4) else use tokenAccountID
 func chooseEffectiveAccountID(logAccountID, tokenAccountID string) string {
-	if logAccountID == "1000000" {
+	if logAccountID == "1000000" || logAccountID == "" {
 		return tokenAccountID
 	}
-	if logAccountID == tokenAccountID {
-		return tokenAccountID
-	}
-	if logAccountID != "" {
+	if logAccountID != tokenAccountID {
 		return logAccountID
 	}
 	return tokenAccountID
