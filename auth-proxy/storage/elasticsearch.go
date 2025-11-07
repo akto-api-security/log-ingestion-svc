@@ -7,90 +7,157 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 )
 
+type logItem struct {
+	tokenAccountID string
+	logEntry       map[string]interface{}
+}
+
 type ElasticsearchStorage struct {
 	elasticsearchClient *elasticsearch.Client
+	logQueue            chan logItem
+	flushInterval       time.Duration
+	batchSize           int
+	wg                  sync.WaitGroup
+	ctx                 context.Context
+	cancel              context.CancelFunc
 }
 
 func NewElasticsearchStorage(elasticsearchClient *elasticsearch.Client) *ElasticsearchStorage {
-	return &ElasticsearchStorage{
+	ctx, cancel := context.WithCancel(context.Background())
+	es := &ElasticsearchStorage{
 		elasticsearchClient: elasticsearchClient,
+		logQueue:            make(chan logItem, 10000),
+		flushInterval:       2 * time.Second,
+		batchSize:           500,
+		ctx:                 ctx,
+		cancel:              cancel,
+	}
+	es.wg.Add(1)
+	go es.bulkWriter()
+	return es
+}
+
+func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID string, logs []map[string]interface{}) error {
+	for _, logEntry := range logs {
+		select {
+		case es.logQueue <- logItem{tokenAccountID: tokenAccountID, logEntry: logEntry}:
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			log.Printf("warning: log queue full, dropping log")
+		}
+	}
+	return nil
+}
+
+func (es *ElasticsearchStorage) bulkWriter() {
+	defer es.wg.Done()
+	ticker := time.NewTicker(es.flushInterval) // Timer that fires every 2 seconds
+	defer ticker.Stop()
+
+	var batch []logItem // Accumulator slice
+
+	for {
+		select {
+		case item := <-es.logQueue: // Received a log from channel
+			batch = append(batch, item)     // Add to batch
+			if len(batch) >= es.batchSize { // Batch full (500 logs)?
+				es.wg.Add(1)            // Track the flush goroutine
+				go es.flushAsync(batch) // ASYNC: Launch goroutine to write to ES
+				batch = nil             // Reset batch (important: don't reuse slice)
+			}
+		case <-ticker.C: // 2 seconds elapsed
+			if len(batch) > 0 { // Have logs to flush?
+				es.wg.Add(1)            // Track the flush goroutine
+				go es.flushAsync(batch) // ASYNC: Launch goroutine to write to ES
+				batch = nil             // Reset batch
+			}
+		case <-es.ctx.Done(): // Shutdown signal received
+			if len(batch) > 0 { // Flush any remaining logs
+				es.wg.Add(1)            // Track the flush goroutine
+				go es.flushAsync(batch) // ASYNC: Launch goroutine to write to ES
+			}
+			return // Exit goroutine
+		}
 	}
 }
 
-func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID string, logs []map[string]interface{}) error {
-	if len(logs) == 0 {
-		return nil
+func (es *ElasticsearchStorage) flushAsync(batch []logItem) {
+	defer es.wg.Done()
+	es.flush(batch)
+}
+
+func (es *ElasticsearchStorage) flush(batch []logItem) {
+	if len(batch) == 0 {
+		return
 	}
 
-	var bulkRequestBody bytes.Buffer
+	var buf bytes.Buffer
 	timestamp := time.Now().Format(time.RFC3339)
 
-	for _, logEntry := range logs {
-		// Extract account ID from log entry
-		logAccountID := extractAccountIdFromLog(logEntry)
+	for _, item := range batch {
+		logAccountID := extractAccountIdFromLog(item.logEntry)
+		effectiveAccountID := chooseEffectiveAccountID(logAccountID, item.tokenAccountID)
 
-		// Choose effective account according to rules
-		effectiveAccountID := chooseEffectiveAccountID(logAccountID, tokenAccountID)
+		item.logEntry["token_accountId"] = item.tokenAccountID
+		item.logEntry["@timestamp"] = timestamp
 
-		// Add timestamp and account IDs to log entry
-		logEntry["token_accountId"] = tokenAccountID
-		logEntry["@timestamp"] = timestamp
-
-		// Data stream name
 		indexName := fmt.Sprintf("logs-account-%s", effectiveAccountID)
 
-		// Create bulk action
 		action := map[string]interface{}{
-			// Use create op; will fail if not creatable/allowed
 			"create": map[string]interface{}{
 				"_index": indexName,
 			},
 		}
 		actionJSON, _ := json.Marshal(action)
-		bulkRequestBody.Write(actionJSON)
-		bulkRequestBody.WriteByte('\n')
+		buf.Write(actionJSON)
+		buf.WriteByte('\n')
 
-		logJSON, _ := json.Marshal(logEntry)
-		bulkRequestBody.Write(logJSON)
-		bulkRequestBody.WriteByte('\n')
+		logJSON, _ := json.Marshal(item.logEntry)
+		buf.Write(logJSON)
+		buf.WriteByte('\n')
 	}
 
-	// Send bulk request to Elasticsearch using esapi
-	bulkRequest := esapi.BulkRequest{
-		Body: &bulkRequestBody,
+	req := esapi.BulkRequest{Body: &buf}
+	if err := es.executeBulk(req); err != nil {
+		log.Printf("bulk write failed: %v", err)
 	}
-
-	return bulkRequestHandler(ctx, bulkRequest, elasticsearchStorage)
 }
 
-func bulkRequestHandler(ctx context.Context, bulkRequest esapi.BulkRequest, elasticsearchStorage *ElasticsearchStorage) error {
-	bulkResponse, err := bulkRequest.Do(ctx, elasticsearchStorage.elasticsearchClient)
+func (es *ElasticsearchStorage) executeBulk(req esapi.BulkRequest) error {
+	resp, err := req.Do(es.ctx, es.elasticsearchClient)
 	if err != nil {
-		return fmt.Errorf("failed to execute bulk request: %w", err)
+		return fmt.Errorf("bulk request failed: %w", err)
 	}
-	defer bulkResponse.Body.Close()
+	defer resp.Body.Close()
 
-	if bulkResponse.IsError() {
-		bodyBytes, _ := io.ReadAll(bulkResponse.Body)
-		// Just log the server message (e.g., data stream not found) and return a concise error
-		log.Printf("bulk indexing failed: status=%s body=%s", bulkResponse.Status(), string(bodyBytes))
-		return fmt.Errorf("bulk request failed: %s", bulkResponse.Status())
+	if resp.IsError() {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Printf("bulk indexing failed: status=%s body=%s", resp.Status(), string(bodyBytes))
+		return fmt.Errorf("bulk request failed: %s", resp.Status())
 	}
 
-	// Check for individual item errors in bulk response
-	var bulkResponseMap map[string]interface{}
-	if err := json.NewDecoder(bulkResponse.Body).Decode(&bulkResponseMap); err != nil {
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		log.Printf("warning: failed to decode bulk response: %v", err)
-	} else if errors, ok := bulkResponseMap["errors"].(bool); ok && errors {
-		log.Printf("warning: some bulk items failed, check response: %+v", bulkResponseMap)
+	} else if errors, ok := result["errors"].(bool); ok && errors {
+		log.Printf("warning: some bulk items failed: %+v", result)
 	}
 
+	return nil
+}
+
+func (es *ElasticsearchStorage) Close() error {
+	es.cancel()
+	es.wg.Wait()
+	close(es.logQueue)
 	return nil
 }
 
