@@ -13,12 +13,13 @@ import (
 )
 
 func main() {
-	_ = godotenv.Load() //If .env file is present, load it
+	_ = godotenv.Load() // loads .env if present, ignore error
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Initialize Elasticsearch client
 	elasticsearchClient, err := elasticsearch.NewClient(elasticsearch.Config{
 		Addresses: []string{cfg.ElasticsearchURL},
 	})
@@ -26,6 +27,7 @@ func main() {
 		log.Fatalf("Failed to create Elasticsearch client: %v", err)
 	}
 
+	// Verify connection to Elasticsearch
 	response, err := elasticsearchClient.Info()
 	if err != nil {
 		log.Fatalf("Failed to connect to Elasticsearch: %v", err)
