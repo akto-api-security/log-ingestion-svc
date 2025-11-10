@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	_ = godotenv.Load()
+	_ = godotenv.Load() //If .env file is present, load it
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -44,16 +44,9 @@ func main() {
 	}
 
 	logStorage := storage.NewElasticsearchStorage(elasticsearchClient)
-	defer func() {
-		log.Println("Shutting down storage, flushing pending logs...")
-		if err := logStorage.Close(); err != nil {
-			log.Printf("Error closing storage: %v", err)
-		}
-	}()
 
 	srv := server.New(cfg, validator, logStorage)
 
-	// Start server (no graceful shutdown handling here per request)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

@@ -13,10 +13,9 @@ import (
 )
 
 type Server struct {
-	config     *config.Config
-	validator  auth.Validator
-	storage    storage.LogStorage
-	httpServer *http.Server
+	config    *config.Config
+	validator auth.Validator
+	storage   storage.LogStorage
 }
 
 func New(cfg *config.Config, validator auth.Validator, storage storage.LogStorage) *Server {
@@ -39,7 +38,7 @@ func (s *Server) Start() error {
 
 	handler := middleware.LoggingMiddleware(mux)
 
-	s.httpServer = &http.Server{
+	httpServer := &http.Server{
 		Addr:         ":" + s.config.Port,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
@@ -48,6 +47,5 @@ func (s *Server) Start() error {
 	}
 
 	log.Printf("Starting auth proxy on port %s", s.config.Port)
-	return s.httpServer.ListenAndServe()
+	return httpServer.ListenAndServe()
 }
-
