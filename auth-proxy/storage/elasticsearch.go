@@ -5,159 +5,87 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"sync"
+	"runtime"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/elastic/go-elasticsearch/v8/esutil"
 )
-
-type logItem struct {
-	tokenAccountID string
-	logEntry       map[string]interface{}
-}
 
 type ElasticsearchStorage struct {
 	elasticsearchClient *elasticsearch.Client
-	logQueue            chan logItem
-	flushInterval       time.Duration
-	batchSize           int
-	wg                  sync.WaitGroup
-	ctx                 context.Context
-	cancel              context.CancelFunc
+	indexer             esutil.BulkIndexer
 }
 
+// NewElasticsearchStorage creates a storage backed by esutil.BulkIndexer which handles batching and concurrency internally.
+// Reference : https://pkg.go.dev/github.com/elastic/go-elasticsearch/v8/esutil#NewBulkIndexer
 func NewElasticsearchStorage(elasticsearchClient *elasticsearch.Client) *ElasticsearchStorage {
-	ctx, cancel := context.WithCancel(context.Background())
-	es := &ElasticsearchStorage{
-		elasticsearchClient: elasticsearchClient,
-		logQueue:            make(chan logItem, 10000),
-		flushInterval:       2 * time.Second,
-		batchSize:           500,
-		ctx:                 ctx,
-		cancel:              cancel,
+	bi, err := esutil.NewBulkIndexer(esutil.BulkIndexerConfig{
+		Client:        elasticsearchClient,
+		NumWorkers:    runtime.NumCPU(),
+		FlushBytes:    5 << 20, // 5MB
+		FlushInterval: 2 * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("failed to create bulk indexer: %v", err)
 	}
-	es.wg.Add(1)
-	go es.bulkWriter()
-	return es
+
+	return &ElasticsearchStorage{
+		elasticsearchClient: elasticsearchClient,
+		indexer:             bi,
+	}
 }
 
 func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID string, logs []map[string]interface{}) error {
-	for _, logEntry := range logs {
-		select {
-		case es.logQueue <- logItem{tokenAccountID: tokenAccountID, logEntry: logEntry}:
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			log.Printf("warning: log queue full, dropping log")
-		}
-	}
-	return nil
-}
-
-func (es *ElasticsearchStorage) bulkWriter() {
-	defer es.wg.Done()
-	ticker := time.NewTicker(es.flushInterval) // Timer that fires every 2 seconds
-	defer ticker.Stop()
-
-	var batch []logItem // Accumulator slice
-
-	for {
-		select {
-		case item := <-es.logQueue: // Received a log from channel
-			batch = append(batch, item)     // Add to batch
-			if len(batch) >= es.batchSize { // Batch full (500 logs)?
-				es.wg.Add(1)            // Track the flush goroutine
-				go es.flushAsync(batch) // ASYNC: Launch goroutine to write to ES
-				batch = nil             // Reset batch (important: don't reuse slice)
-			}
-		case <-ticker.C: // 2 seconds elapsed
-			if len(batch) > 0 { // Have logs to flush?
-				es.wg.Add(1)            // Track the flush goroutine
-				go es.flushAsync(batch) // ASYNC: Launch goroutine to write to ES
-				batch = nil             // Reset batch
-			}
-		case <-es.ctx.Done(): // Shutdown signal received
-			if len(batch) > 0 { // Flush any remaining logs
-				es.wg.Add(1)            // Track the flush goroutine
-				go es.flushAsync(batch) // ASYNC: Launch goroutine to write to ES
-			}
-			return // Exit goroutine
-		}
-	}
-}
-
-func (es *ElasticsearchStorage) flushAsync(batch []logItem) {
-	defer es.wg.Done()
-	es.flush(batch)
-}
-
-func (es *ElasticsearchStorage) flush(batch []logItem) {
-	if len(batch) == 0 {
-		return
-	}
-
-	var buf bytes.Buffer
 	timestamp := time.Now().Format(time.RFC3339)
 
-	for _, item := range batch {
-		logAccountID := extractAccountIdFromLog(item.logEntry)
-		effectiveAccountID := chooseEffectiveAccountID(logAccountID, item.tokenAccountID)
+	for _, logEntry := range logs {
+		logAccountID := extractAccountIdFromLog(logEntry)
+		effectiveAccountID := chooseEffectiveAccountID(logAccountID, tokenAccountID)
 
-		item.logEntry["token_accountId"] = item.tokenAccountID
-		item.logEntry["@timestamp"] = timestamp
+		logEntry["token_accountId"] = tokenAccountID
+		logEntry["@timestamp"] = timestamp
 
 		indexName := fmt.Sprintf("logs-account-%s", effectiveAccountID)
 
-		action := map[string]interface{}{
-			"create": map[string]interface{}{
-				"_index": indexName,
+		body, err := json.Marshal(logEntry)
+		if err != nil {
+			// Skip this log and continue
+			log.Printf("warning: failed to marshal log entry: %v", err)
+			continue
+		}
+
+		item := esutil.BulkIndexerItem{
+			Action: "create",
+			Index:  indexName,
+			Body:   bytes.NewReader(body),
+			OnFailure: func(ctx context.Context, item esutil.BulkIndexerItem, resp esutil.BulkIndexerResponseItem, err error) {
+				if err != nil {
+					log.Printf("bulk indexer failure (err): %v", err)
+				} else {
+					// resp contains status and error body
+					if resp.Error.Type != "" {
+						log.Printf("bulk indexer item failed: index=%s status=%s error=%+v", item.Index, resp.Status, resp.Error)
+					}
+				}
 			},
 		}
-		actionJSON, _ := json.Marshal(action)
-		buf.Write(actionJSON)
-		buf.WriteByte('\n')
 
-		logJSON, _ := json.Marshal(item.logEntry)
-		buf.Write(logJSON)
-		buf.WriteByte('\n')
-	}
-
-	req := esapi.BulkRequest{Body: &buf}
-	if err := es.executeBulk(req); err != nil {
-		log.Printf("bulk write failed: %v", err)
-	}
-}
-
-func (es *ElasticsearchStorage) executeBulk(req esapi.BulkRequest) error {
-	resp, err := req.Do(es.ctx, es.elasticsearchClient)
-	if err != nil {
-		return fmt.Errorf("bulk request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.IsError() {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		log.Printf("bulk indexing failed: status=%s body=%s", resp.Status(), string(bodyBytes))
-		return fmt.Errorf("bulk request failed: %s", resp.Status())
-	}
-
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Printf("warning: failed to decode bulk response: %v", err)
-	} else if errors, ok := result["errors"].(bool); ok && errors {
-		log.Printf("warning: some bulk items failed: %+v", result)
+		if err := es.indexer.Add(ctx, item); err != nil {
+			log.Printf("warning: bulk indexer Add error: %v", err)
+		}
 	}
 
 	return nil
 }
 
 func (es *ElasticsearchStorage) Close() error {
-	es.cancel()
-	es.wg.Wait()
-	close(es.logQueue)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := es.indexer.Close(ctx); err != nil {
+		return fmt.Errorf("failed to close bulk indexer: %w", err)
+	}
 	return nil
 }
 

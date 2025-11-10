@@ -1,12 +1,7 @@
 package main
 
 import (
-	"context"
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
 	"auth-proxy/auth"
 	"auth-proxy/config"
@@ -58,23 +53,8 @@ func main() {
 
 	srv := server.New(cfg, validator, logStorage)
 
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- srv.Start()
-	}()
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	select {
-	case err := <-errChan:
+	// Start server (no graceful shutdown handling here per request)
+	if err := srv.Start(); err != nil {
 		log.Fatalf("Server failed: %v", err)
-	case sig := <-sigChan:
-		log.Printf("Received signal %v, shutting down gracefully...", sig)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("Server shutdown error: %v", err)
-		}
 	}
 }
