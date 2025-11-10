@@ -39,6 +39,7 @@ func NewElasticsearchStorage(elasticsearchClient *elasticsearch.Client) *Elastic
 
 func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID string, logs []map[string]interface{}) error {
 	timestamp := time.Now().Format(time.RFC3339)
+	marshalErrCount := 0
 
 	for _, logEntry := range logs {
 		logAccountID := extractAccountIdFromLog(logEntry)
@@ -51,8 +52,9 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 
 		body, err := json.Marshal(logEntry)
 		if err != nil {
-			// Skip this log and continue
+			// Count marshal failures and continue processing other logs.
 			log.Printf("warning: failed to marshal log entry: %v", err)
+			marshalErrCount++
 			continue
 		}
 
@@ -60,7 +62,7 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 			Action: "create",
 			Index:  indexName,
 			Body:   bytes.NewReader(body),
-			OnFailure: func(ctx context.Context, item esutil.BulkIndexerItem, resp esutil.BulkIndexerResponseItem, err error) {
+			OnFailure: func(callbackCtx context.Context, item esutil.BulkIndexerItem, resp esutil.BulkIndexerResponseItem, err error) {
 				if err != nil {
 					log.Printf("bulk indexer failure (err): %v", err)
 				} else {
@@ -74,7 +76,12 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 
 		if err := es.indexer.Add(ctx, item); err != nil {
 			log.Printf("warning: bulk indexer Add error: %v", err)
+			return err
 		}
+	}
+
+	if marshalErrCount > 0 {
+		return fmt.Errorf("%d log entries failed to marshal", marshalErrCount)
 	}
 
 	return nil
