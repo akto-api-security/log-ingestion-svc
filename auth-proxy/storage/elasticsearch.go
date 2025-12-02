@@ -5,92 +5,94 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
+	"runtime"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/elastic/go-elasticsearch/v8/esutil"
 )
 
 type ElasticsearchStorage struct {
 	elasticsearchClient *elasticsearch.Client
+	indexer             esutil.BulkIndexer
 }
 
+// NewElasticsearchStorage creates a storage backed by esutil.BulkIndexer which handles batching and concurrency internally.
+// Reference : https://pkg.go.dev/github.com/elastic/go-elasticsearch/v8/esutil#NewBulkIndexer
 func NewElasticsearchStorage(elasticsearchClient *elasticsearch.Client) *ElasticsearchStorage {
+	bi, err := esutil.NewBulkIndexer(esutil.BulkIndexerConfig{
+		Client:        elasticsearchClient,
+		NumWorkers:    runtime.NumCPU(),
+		FlushBytes:    5 << 20, // 5MB
+		FlushInterval: 2 * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("failed to create bulk indexer: %v", err)
+	}
+
 	return &ElasticsearchStorage{
 		elasticsearchClient: elasticsearchClient,
+		indexer:             bi,
 	}
 }
 
-func (elasticsearchStorage *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID string, logs []map[string]interface{}) error {
-	if len(logs) == 0 {
-		return nil
-	}
-
-	var bulkRequestBody bytes.Buffer
+func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID string, logs []map[string]interface{}) error {
 	timestamp := time.Now().Format(time.RFC3339)
+	marshalErrCount := 0
 
 	for _, logEntry := range logs {
-		// Extract account ID from log entry
 		logAccountID := extractAccountIdFromLog(logEntry)
-
-		// Choose effective account according to rules
 		effectiveAccountID := chooseEffectiveAccountID(logAccountID, tokenAccountID)
 
-		// Add timestamp and account IDs to log entry
 		logEntry["token_accountId"] = tokenAccountID
 		logEntry["@timestamp"] = timestamp
 
-		// Data stream name
 		indexName := fmt.Sprintf("logs-account-%s", effectiveAccountID)
 
-		// Create bulk action
-		action := map[string]interface{}{
-			// Use create op; will fail if not creatable/allowed
-			"create": map[string]interface{}{
-				"_index": indexName,
+		body, err := json.Marshal(logEntry)
+		if err != nil {
+			// Count marshal failures and continue processing other logs.
+			log.Printf("warning: failed to marshal log entry: %v", err)
+			marshalErrCount++
+			continue
+		}
+
+		item := esutil.BulkIndexerItem{
+			Action: "create",
+			Index:  indexName,
+			Body:   bytes.NewReader(body),
+			OnFailure: func(callbackCtx context.Context, item esutil.BulkIndexerItem, resp esutil.BulkIndexerResponseItem, err error) {
+				if err != nil {
+					log.Printf("bulk indexer failure (err): %v", err)
+				} else {
+					// resp contains status and error body
+					if resp.Error.Type != "" {
+						log.Printf("bulk indexer item failed: index=%s status=%s error=%+v", item.Index, resp.Status, resp.Error)
+					}
+				}
 			},
 		}
-		actionJSON, _ := json.Marshal(action)
-		bulkRequestBody.Write(actionJSON)
-		bulkRequestBody.WriteByte('\n')
 
-		logJSON, _ := json.Marshal(logEntry)
-		bulkRequestBody.Write(logJSON)
-		bulkRequestBody.WriteByte('\n')
+		if err := es.indexer.Add(ctx, item); err != nil {
+			log.Printf("warning: bulk indexer Add error: %v", err)
+			return err
+		}
 	}
 
-	// Send bulk request to Elasticsearch using esapi
-	bulkRequest := esapi.BulkRequest{
-		Body: &bulkRequestBody,
+	if marshalErrCount > 0 {
+		return fmt.Errorf("%d log entries failed to marshal", marshalErrCount)
 	}
 
-	return bulkRequestHandler(ctx, bulkRequest, elasticsearchStorage)
+	return nil
 }
 
-func bulkRequestHandler(ctx context.Context, bulkRequest esapi.BulkRequest, elasticsearchStorage *ElasticsearchStorage) error {
-	bulkResponse, err := bulkRequest.Do(ctx, elasticsearchStorage.elasticsearchClient)
-	if err != nil {
-		return fmt.Errorf("failed to execute bulk request: %w", err)
+func (es *ElasticsearchStorage) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := es.indexer.Close(ctx); err != nil {
+		return fmt.Errorf("failed to close bulk indexer: %w", err)
 	}
-	defer bulkResponse.Body.Close()
-
-	if bulkResponse.IsError() {
-		bodyBytes, _ := io.ReadAll(bulkResponse.Body)
-		// Just log the server message (e.g., data stream not found) and return a concise error
-		log.Printf("bulk indexing failed: status=%s body=%s", bulkResponse.Status(), string(bodyBytes))
-		return fmt.Errorf("bulk request failed: %s", bulkResponse.Status())
-	}
-
-	// Check for individual item errors in bulk response
-	var bulkResponseMap map[string]interface{}
-	if err := json.NewDecoder(bulkResponse.Body).Decode(&bulkResponseMap); err != nil {
-		log.Printf("warning: failed to decode bulk response: %v", err)
-	} else if errors, ok := bulkResponseMap["errors"].(bool); ok && errors {
-		log.Printf("warning: some bulk items failed, check response: %+v", bulkResponseMap)
-	}
-
 	return nil
 }
 
