@@ -68,7 +68,7 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 				} else {
 					// resp contains status and error body
 					if resp.Error.Type != "" {
-						log.Printf("bulk indexer item failed: index=%s status=%s error=%+v", item.Index, resp.Status, resp.Error)
+						log.Printf("bulk indexer item failed: index=%s status=%d error=%+v", item.Index, resp.Status, resp.Error)
 					}
 				}
 			},
