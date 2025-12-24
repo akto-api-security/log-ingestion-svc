@@ -45,6 +45,10 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 		logAccountID := extractAccountIdFromLog(logEntry)
 		effectiveAccountID := chooseEffectiveAccountID(logAccountID, tokenAccountID)
 
+		// Log the received log entry before attempting to marshal/index it.
+		// This helps debug what arrives at the server prior to ES insertion.
+		// log.Printf("received log: token_account=%s extracted_account=%s effective_account=%s entry=%+v", tokenAccountID, logAccountID, effectiveAccountID, logEntry)
+
 		logEntry["token_accountId"] = tokenAccountID
 		logEntry["@timestamp"] = timestamp
 
@@ -58,10 +62,19 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 			continue
 		}
 
+		// Make a copy of the marshaled body so the OnSuccess closure can reference
+		// the exact bytes that were enqueued (the original slice may be reused).
+		bodyCopy := make([]byte, len(body))
+		copy(bodyCopy, body)
+
 		item := esutil.BulkIndexerItem{
 			Action: "create",
 			Index:  indexName,
-			Body:   bytes.NewReader(body),
+			Body:   bytes.NewReader(bodyCopy),
+			OnSuccess: func(callbackCtx context.Context, item esutil.BulkIndexerItem, resp esutil.BulkIndexerResponseItem) {
+				// Log the successfully indexed document (index, status and the document body)
+				log.Printf("Success : Log inserted - index=%s status=%d doc=%s", item.Index, resp.Status, string(bodyCopy))
+			},
 			OnFailure: func(callbackCtx context.Context, item esutil.BulkIndexerItem, resp esutil.BulkIndexerResponseItem, err error) {
 				if err != nil {
 					log.Printf("bulk indexer failure (err): %v", err)
@@ -71,6 +84,8 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 						log.Printf("bulk indexer item failed: index=%s status=%d error=%+v", item.Index, resp.Status, resp.Error)
 					}
 				}
+
+				log.Printf("Failure : Log not inserted - index=%s status=%d doc=%s", item.Index, resp.Status, string(bodyCopy))
 			},
 		}
 
