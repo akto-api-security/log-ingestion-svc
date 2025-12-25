@@ -160,7 +160,7 @@ func sanitizeIndexName(name string) string {
 	}
 	result := strings.ToLower(name)
 	result = invalidCharsRegex.ReplaceAllString(result, "-")
-	result = strings.TrimLeft(result, "-_.+")
+	result = strings.TrimLeft(result, "-_.")
 	if len(result) > 255 {
 		result = result[:255]
 	}
