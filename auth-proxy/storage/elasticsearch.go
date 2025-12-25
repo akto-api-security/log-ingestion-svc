@@ -43,18 +43,18 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 
 	for _, logEntry := range logs {
 		logAccountID := extractAccountIdFromLog(logEntry)
-		effectiveAccountID := chooseEffectiveAccountID(logAccountID, tokenAccountID)
+		containerName := extractContainerName(logEntry)
 
 		// Log the received log entry before attempting to marshal/index it.
 		// This helps debug what arrives at the server prior to ES insertion.
 		if tokenAccountID == "1756844701" {
-			log.Printf("received log: token_account=%s extracted_account=%s effective_account=%s entry=%+v", tokenAccountID, logAccountID, effectiveAccountID, logEntry)
+			log.Printf("received log: token_account=%s extracted_account=%s container=%s entry=%+v", tokenAccountID, logAccountID, containerName, logEntry)
 		}
 
 		logEntry["token_accountId"] = tokenAccountID
 		logEntry["@timestamp"] = timestamp
 
-		indexName := fmt.Sprintf("logs-account-%s", effectiveAccountID)
+		indexName := buildIndexName(containerName)
 
 		body, err := json.Marshal(logEntry)
 		if err != nil {
@@ -76,7 +76,7 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 			OnSuccess: func(callbackCtx context.Context, item esutil.BulkIndexerItem, resp esutil.BulkIndexerResponseItem) {
 				// Log the successfully indexed document (index, status and the document body)
 				if tokenAccountID == "1756844701" {
-					log.Printf("successfully indexed log for account %s", effectiveAccountID)
+					log.Printf("successfully indexed log to container index %s", item.Index)
 					log.Printf("Success : Log inserted - index=%s status=%d doc=%s", item.Index, resp.Status, string(bodyCopy))
 				}
 
@@ -125,12 +125,51 @@ func extractAccountIdFromLog(logEntry map[string]interface{}) string {
 	return ""
 }
 
-func chooseEffectiveAccountID(logAccountID, tokenAccountID string) string {
-	if logAccountID == "1000000" || logAccountID == "" {
-		return tokenAccountID
+// extractContainerName extracts the container name from the log entry
+func extractContainerName(logEntry map[string]interface{}) string {
+	// Try top-level container_name first (Docker logs metadata)
+	if v, ok := logEntry["container_name"].(string); ok && v != "" {
+		return v
 	}
-	if logAccountID != tokenAccountID {
-		return logAccountID
+	// Try nested kubernetes.container_name (K8s logs metadata)
+	if k8s, ok := logEntry["kubernetes"].(map[string]interface{}); ok {
+		if v, ok := k8s["container_name"].(string); ok && v != "" {
+			return v
+		}
 	}
-	return tokenAccountID
+	return ""
+}
+
+// buildIndexName creates the Elasticsearch index name from container name
+// Uses logs-<type>-<container> pattern to match existing logs-*-* template
+func buildIndexName(containerName string) string {
+	if containerName != "" {
+		// Sanitize container name for ES index naming (lowercase, replace invalid chars)
+		// ES index names must be lowercase and not contain: \, /, *, ?, ", <, >, |, ` ` (space), ,, #
+		sanitized := sanitizeIndexName(containerName)
+		return fmt.Sprintf("logs-containers-%s", sanitized)
+	}
+	// Default index if no container name found
+	return "logs-containers-default"
+}
+
+// sanitizeIndexName ensures the name is valid for Elasticsearch indices
+func sanitizeIndexName(name string) string {
+	// Convert to lowercase and replace invalid characters with hyphens
+	result := ""
+	for _, ch := range name {
+		switch {
+		case ch >= 'a' && ch <= 'z':
+			result += string(ch)
+		case ch >= 'A' && ch <= 'Z':
+			result += string(ch - 'A' + 'a')
+		case ch >= '0' && ch <= '9':
+			result += string(ch)
+		case ch == '-' || ch == '_' || ch == '.':
+			result += string(ch)
+		default:
+			result += "-"
+		}
+	}
+	return result
 }
