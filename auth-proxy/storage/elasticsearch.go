@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -151,28 +152,15 @@ func buildIndexName(containerName string) string {
 	return "logs-containers-default"
 }
 
+var invalidCharsRegex = regexp.MustCompile(`[^a-z0-9._-]`)
+
 func sanitizeIndexName(name string) string {
 	if name == "" {
 		return ""
 	}
-
-	var builder strings.Builder
-	builder.Grow(len(name))
-
-	for _, ch := range name {
-		switch {
-		case ch >= 'a' && ch <= 'z', ch >= '0' && ch <= '9':
-			builder.WriteRune(ch)
-		case ch >= 'A' && ch <= 'Z':
-			builder.WriteRune(ch - 'A' + 'a')
-		case ch == '_' || ch == '.' || ch == '-':
-			builder.WriteRune(ch)
-		default:
-			builder.WriteRune('-')
-		}
-	}
-
-	result := strings.TrimLeft(builder.String(), "-_.+")
+	result := strings.ToLower(name)
+	result = invalidCharsRegex.ReplaceAllString(result, "-")
+	result = strings.TrimLeft(result, "-_.+")
 	if len(result) > 255 {
 		result = result[:255]
 	}
