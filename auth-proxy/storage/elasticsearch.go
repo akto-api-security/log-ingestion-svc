@@ -164,5 +164,9 @@ func sanitizeIndexName(name string) string {
 	if len(result) > 255 {
 		result = result[:255]
 	}
-	return strings.TrimRight(result, "-")
+	result = strings.TrimRight(result, "-")
+	if result == "." || result == ".." {
+		return ""
+	}
+	return result
 }
