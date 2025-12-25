@@ -32,12 +32,12 @@ func (h *LogsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	accountID := claims.GetAccountID()
 
+	defer r.Body.Close()
 	var logs []map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&logs); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
 
 	if err := h.storage.StoreLogs(r.Context(), accountID, logs); err != nil {
 		log.Printf("Failed to store logs: %v", err)
