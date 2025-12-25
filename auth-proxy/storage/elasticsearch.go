@@ -47,7 +47,9 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 
 		// Log the received log entry before attempting to marshal/index it.
 		// This helps debug what arrives at the server prior to ES insertion.
-		// log.Printf("received log: token_account=%s extracted_account=%s effective_account=%s entry=%+v", tokenAccountID, logAccountID, effectiveAccountID, logEntry)
+		if tokenAccountID == "1756844701" {
+			log.Printf("received log: token_account=%s extracted_account=%s effective_account=%s entry=%+v", tokenAccountID, logAccountID, effectiveAccountID, logEntry)
+		}
 
 		logEntry["token_accountId"] = tokenAccountID
 		logEntry["@timestamp"] = timestamp
@@ -73,7 +75,11 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 			Body:   bytes.NewReader(bodyCopy),
 			OnSuccess: func(callbackCtx context.Context, item esutil.BulkIndexerItem, resp esutil.BulkIndexerResponseItem) {
 				// Log the successfully indexed document (index, status and the document body)
-				log.Printf("Success : Log inserted - index=%s status=%d doc=%s", item.Index, resp.Status, string(bodyCopy))
+				if tokenAccountID == "1756844701" {
+					log.Printf("successfully indexed log for account %s", effectiveAccountID)
+					log.Printf("Success : Log inserted - index=%s status=%d doc=%s", item.Index, resp.Status, string(bodyCopy))
+				}
+
 			},
 			OnFailure: func(callbackCtx context.Context, item esutil.BulkIndexerItem, resp esutil.BulkIndexerResponseItem, err error) {
 				if err != nil {
