@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
@@ -43,18 +45,18 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 
 	for _, logEntry := range logs {
 		logAccountID := extractAccountIdFromLog(logEntry)
-		effectiveAccountID := chooseEffectiveAccountID(logAccountID, tokenAccountID)
+		containerName := extractContainerName(logEntry)
 
 		// Log the received log entry before attempting to marshal/index it.
 		// This helps debug what arrives at the server prior to ES insertion.
 		if tokenAccountID == "1756844701" {
-			log.Printf("received log: token_account=%s extracted_account=%s effective_account=%s entry=%+v", tokenAccountID, logAccountID, effectiveAccountID, logEntry)
+			log.Printf("received log: token_account=%s extracted_account=%s container=%s entry=%+v", tokenAccountID, logAccountID, containerName, logEntry)
 		}
 
 		logEntry["token_accountId"] = tokenAccountID
 		logEntry["@timestamp"] = timestamp
 
-		indexName := fmt.Sprintf("logs-account-%s", effectiveAccountID)
+		indexName := buildIndexName(containerName)
 
 		body, err := json.Marshal(logEntry)
 		if err != nil {
@@ -76,7 +78,7 @@ func (es *ElasticsearchStorage) StoreLogs(ctx context.Context, tokenAccountID st
 			OnSuccess: func(callbackCtx context.Context, item esutil.BulkIndexerItem, resp esutil.BulkIndexerResponseItem) {
 				// Log the successfully indexed document (index, status and the document body)
 				if tokenAccountID == "1756844701" {
-					log.Printf("successfully indexed log for account %s", effectiveAccountID)
+					log.Printf("successfully indexed log to container index %s", item.Index)
 					log.Printf("Success : Log inserted - index=%s status=%d doc=%s", item.Index, resp.Status, string(bodyCopy))
 				}
 
@@ -125,12 +127,46 @@ func extractAccountIdFromLog(logEntry map[string]interface{}) string {
 	return ""
 }
 
-func chooseEffectiveAccountID(logAccountID, tokenAccountID string) string {
-	if logAccountID == "1000000" || logAccountID == "" {
-		return tokenAccountID
+// extractContainerName extracts the container name from the log entry
+func extractContainerName(logEntry map[string]interface{}) string {
+	// Try top-level container_name first (Docker logs metadata)
+	if v, ok := logEntry["container_name"].(string); ok && v != "" {
+		return v
 	}
-	if logAccountID != tokenAccountID {
-		return logAccountID
+	// Try nested kubernetes.container_name (K8s logs metadata)
+	if k8s, ok := logEntry["kubernetes"].(map[string]interface{}); ok {
+		if v, ok := k8s["container_name"].(string); ok && v != "" {
+			return v
+		}
 	}
-	return tokenAccountID
+	return ""
+}
+
+func buildIndexName(containerName string) string {
+	if containerName != "" {
+		sanitized := sanitizeIndexName(containerName)
+		if sanitized != "" {
+			return fmt.Sprintf("logs-containers-%s", sanitized)
+		}
+	}
+	return "logs-containers-default"
+}
+
+var invalidCharsRegex = regexp.MustCompile(`[^a-z0-9._-]`)
+
+func sanitizeIndexName(name string) string {
+	if name == "" {
+		return ""
+	}
+	result := strings.ToLower(name)
+	result = invalidCharsRegex.ReplaceAllString(result, "-")
+	result = strings.TrimLeft(result, "-_.")
+	if len(result) > 255 {
+		result = result[:255]
+	}
+	result = strings.TrimRight(result, "-")
+	if result == "." || result == ".." {
+		return ""
+	}
+	return result
 }
