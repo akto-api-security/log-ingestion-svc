@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
@@ -140,36 +141,40 @@ func extractContainerName(logEntry map[string]interface{}) string {
 	return ""
 }
 
-// buildIndexName creates the Elasticsearch index name from container name
-// Uses logs-<type>-<container> pattern to match existing logs-*-* template
 func buildIndexName(containerName string) string {
 	if containerName != "" {
-		// Sanitize container name for ES index naming (lowercase, replace invalid chars)
-		// ES index names must be lowercase and not contain: \, /, *, ?, ", <, >, |, ` ` (space), ,, #
 		sanitized := sanitizeIndexName(containerName)
-		return fmt.Sprintf("logs-containers-%s", sanitized)
+		if sanitized != "" {
+			return fmt.Sprintf("logs-containers-%s", sanitized)
+		}
 	}
-	// Default index if no container name found
 	return "logs-containers-default"
 }
 
-// sanitizeIndexName ensures the name is valid for Elasticsearch indices
 func sanitizeIndexName(name string) string {
-	// Convert to lowercase and replace invalid characters with hyphens
-	result := ""
+	if name == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(name))
+
 	for _, ch := range name {
 		switch {
-		case ch >= 'a' && ch <= 'z':
-			result += string(ch)
+		case ch >= 'a' && ch <= 'z', ch >= '0' && ch <= '9':
+			builder.WriteRune(ch)
 		case ch >= 'A' && ch <= 'Z':
-			result += string(ch - 'A' + 'a')
-		case ch >= '0' && ch <= '9':
-			result += string(ch)
-		case ch == '-' || ch == '_' || ch == '.':
-			result += string(ch)
+			builder.WriteRune(ch - 'A' + 'a')
+		case ch == '_' || ch == '.' || ch == '-':
+			builder.WriteRune(ch)
 		default:
-			result += "-"
+			builder.WriteRune('-')
 		}
 	}
-	return result
+
+	result := strings.TrimLeft(builder.String(), "-_.+")
+	if len(result) > 255 {
+		result = result[:255]
+	}
+	return strings.TrimRight(result, "-")
 }
